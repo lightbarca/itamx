@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added `check_availability` to `MatrixClient.search`, `MatrixClient.detail` and
+  `SearchOptions` (default on). Being part of the request body, it is part of the
+  cache key, so a no-seat-check search is never answered with a cached seat-checked one.
+- A 5xx inside the batch reply now raises `httpx.HTTPStatusError`, as one outside does,
+  instead of being returned as data. Matrix's own 4xx refusals are still returned.
+- A failed API-key fetch is remembered for an hour, so each new process falls back
+  at once instead of fetching the page again.
 - Added GitHub Actions CI for lint, tests, compile, locked MCP install, and build.
 - Added `itamx mcp-config` for MCP client configuration.
 - Added shared Matrix request-building helpers used by both CLI and MCP.
