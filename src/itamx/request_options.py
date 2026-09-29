@@ -15,6 +15,7 @@ class SearchOptions:
     change_of_airport: bool = True
     currency: str | None = None
     sales_city: str | None = None
+    check_availability: bool = True
 
     def search_kwargs(self) -> dict[str, Any]:
         return {
@@ -25,6 +26,7 @@ class SearchOptions:
             "currency": self.currency,
             "sales_city": self.sales_city,
             "sorts": self.sorts,
+            "check_availability": self.check_availability,
         }
 
     def detail_kwargs(self) -> dict[str, Any]:
@@ -35,4 +37,5 @@ class SearchOptions:
             "currency": self.currency,
             "sales_city": self.sales_city,
             "sorts": self.sorts,
+            "check_availability": self.check_availability,
         }

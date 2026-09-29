@@ -184,6 +184,7 @@ def build_search_body(
     change_of_airport: bool = True,
     currency: str | None = None,
     sales_city: str | None = None,
+    check_availability: bool = True,
 ) -> dict[str, Any]:
     """Build the inner JSON-RPC payload for a Matrix /v1/search call.
 
@@ -193,6 +194,9 @@ def build_search_body(
     `currency`: ISO 4217 code (e.g. "USD", "ILS"). Overrides Matrix's auto-pick.
     `sales_city`: IATA code of the point-of-sale city — affects which fares are
                   offered (some only available from certain origins).
+    `check_availability`: Matrix's "only show flights and prices with available
+                  seats". True prices the cheapest fare it can sell now; False the
+                  cheapest it can construct, whether or not a seat is open in it.
     """
     inputs: dict[str, Any] = {
         "filter": {},
@@ -208,7 +212,7 @@ def build_search_body(
         "cabin": _normalize_cabin(cabin),
         "maxLegsRelativeToMin": 1 if max_stops is None else max_stops,
         "changeOfAirport": change_of_airport,
-        "checkAvailability": True,
+        "checkAvailability": check_availability,
     }
     if currency:
         inputs["currency"] = currency
@@ -281,6 +285,7 @@ class MatrixClient:
         sales_city: str | None = None,
         sorts: str = "default",
         cache_ttl: int | None = None,
+        check_availability: bool = True,
     ) -> dict[str, Any]:
         """Run a search. Returns the raw JSON response dict.
 
@@ -291,6 +296,9 @@ class MatrixClient:
         `cache_ttl`: if set (seconds), check the on-disk cache first and store
                  fresh responses. Set 0 to skip the cache entirely. Default None
                  uses the cache module's DEFAULT_TTL_SECONDS.
+        `check_availability`: False prices fares whether or not a seat is open;
+                 see build_search_body. It is part of the request body, so the
+                 cache never serves one answer to the other question.
         """
         body = build_search_body(
             slices=slices,
@@ -303,6 +311,7 @@ class MatrixClient:
             currency=currency,
             sales_city=sales_city,
             sorts=sorts,
+            check_availability=check_availability,
         )
 
         # Cache check: skip when cache_ttl=0 (explicit bypass).
@@ -384,8 +393,14 @@ class MatrixClient:
         change_of_airport: bool = True,
         currency: str | None = None,
         sales_city: str | None = None,
+        check_availability: bool = True,
     ) -> dict[str, Any]:
-        """Fetch booking details (incl. fare bookingCode) for one solution."""
+        """Fetch booking details (incl. fare bookingCode) for one solution.
+
+        Pass the same `check_availability` the search used: the detail call
+        re-prices the solution, and asking it the other question describes a
+        different fare from the one the search returned.
+        """
         solution_set = search_response.get("solutionSet")
         session = search_response.get("session")
         if not solution_set or not session:
@@ -406,7 +421,7 @@ class MatrixClient:
                 "cabin": _normalize_cabin(cabin),
                 "maxLegsRelativeToMin": 1 if max_stops is None else max_stops,
                 "changeOfAirport": change_of_airport,
-                "checkAvailability": True,
+                "checkAvailability": check_availability,
             },
             "summarizerSet": "viewDetails",
             "solutionSet": solution_set,

@@ -95,6 +95,7 @@ class RegressionTests(unittest.TestCase):
                 "currency": "USD",
                 "sales_city": "NYC",
                 "sorts": "price",
+                "check_availability": True,
             },
         )
         self.assertEqual(
@@ -106,6 +107,7 @@ class RegressionTests(unittest.TestCase):
                 "currency": "USD",
                 "sales_city": "NYC",
                 "sorts": "price",
+                "check_availability": True,
             },
         )
 
