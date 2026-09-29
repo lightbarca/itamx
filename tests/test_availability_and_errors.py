@@ -1,4 +1,4 @@
-"""Seat availability as an option.
+"""Seat availability as an option, and server errors inside the batch reply.
 
 Every request here goes through a real MatrixClient to an httpx.MockTransport
 that answers in Matrix's multipart batch format, so the body on the wire and
@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from itamx.client import MatrixClient, Slice, build_search_body
 from itamx.request_options import SearchOptions
@@ -100,3 +101,26 @@ def test_search_options_carry_it_to_both_calls():
     assert options.search_kwargs()["check_availability"] is False
     assert options.detail_kwargs()["check_availability"] is False
     assert SearchOptions().search_kwargs()["check_availability"] is True
+
+
+# --- the status inside the batch ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status", ["500 Internal Server Error", "502 Bad Gateway", "503 Service Unavailable"]
+)
+def test_a_server_error_inside_the_batch_raises_like_one_outside(status):
+    rec = Recorder(lambda _body: batch_reply({"error": {"code": int(status[:3])}}, status))
+    with rec.client() as c, pytest.raises(httpx.HTTPStatusError) as caught:
+        c.search(SLICES, cache_ttl=0)
+    assert caught.value.response.status_code == int(status[:3])
+
+
+def test_matrix_refusing_the_request_is_still_returned_as_its_message():
+    # Matrix says "no" to a bad request inside a 200 -- a date in the past, an
+    # expired session -- and callers read the message from the "error" field.
+    refusal = {"error": {"message": "Invalid session id.", "type": "input"}}
+    for status in ("200 OK", "400 Bad Request"):
+        rec = Recorder(lambda _body, s=status: batch_reply(refusal, s))
+        with rec.client() as c:
+            assert c.search(SLICES, cache_ttl=0) == refusal

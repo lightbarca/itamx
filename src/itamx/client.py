@@ -9,6 +9,7 @@ no OAuth, no anti-bot tokens needed for search/summarize calls.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 from dataclasses import dataclass, field
 from typing import Any
@@ -91,6 +92,34 @@ def _multipart_request(
         "",
     ]
     return "\r\n".join(parts).encode("utf-8")
+
+
+# The status line of the call inside the batch envelope: "HTTP/1.1 503 ...".
+_INNER_STATUS_RE = re.compile(rb"^HTTP/\d(?:\.\d)? (\d{3})", re.MULTILINE)
+
+
+def _raise_for_inner_status(resp: httpx.Response) -> None:
+    """Raise when the call inside the batch failed on the server's side.
+
+    The batch front end answers 200 whenever it could deliver *a* reply, and
+    the reply's own status line sits inside the multipart body. A 5xx there is
+    the same failure as a 5xx outside -- worth retrying, not worth reading as
+    data -- so it raises the same `httpx.HTTPStatusError` that
+    `raise_for_status()` would. A 4xx is left alone: its body carries Matrix's
+    own error message, which callers already read from the "error" field.
+    """
+    m = _INNER_STATUS_RE.search(resp.content)
+    if not m:
+        return
+    status = int(m.group(1))
+    if status < 500:
+        return
+    inner = httpx.Response(status, request=resp.request, content=resp.content)
+    raise httpx.HTTPStatusError(
+        f"Server error '{status}' inside the batch response for url '{resp.request.url}'",
+        request=resp.request,
+        response=inner,
+    )
 
 
 def _parse_multipart_response(raw: bytes) -> dict[str, Any]:
@@ -269,6 +298,7 @@ class MatrixClient:
             headers={"Content-Type": "text/plain; charset=UTF-8"},
         )
         resp.raise_for_status()
+        _raise_for_inner_status(resp)
         return _parse_multipart_response(resp.content)
 
     def search(
@@ -378,6 +408,7 @@ class MatrixClient:
             headers={"Content-Type": "text/plain; charset=UTF-8"},
         )
         resp.raise_for_status()
+        _raise_for_inner_status(resp)
         return _parse_multipart_response(resp.content)
 
     def detail(
