@@ -1,4 +1,5 @@
-"""Seat availability as an option, and server errors inside the batch reply.
+"""Seat availability as an option, server errors inside the batch reply, and a
+failed key fetch.
 
 Every request here goes through a real MatrixClient to an httpx.MockTransport
 that answers in Matrix's multipart batch format, so the body on the wire and
@@ -8,10 +9,13 @@ the cache key built from it are the ones a live search would use.
 from __future__ import annotations
 
 import json
+import os
+import time
 
 import httpx
 import pytest
 
+from itamx import keyfetch
 from itamx.client import MatrixClient, Slice, build_search_body
 from itamx.request_options import SearchOptions
 
@@ -124,3 +128,60 @@ def test_matrix_refusing_the_request_is_still_returned_as_its_message():
         rec = Recorder(lambda _body, s=status: batch_reply(refusal, s))
         with rec.client() as c:
             assert c.search(SLICES, cache_ttl=0) == refusal
+
+
+# --- a key fetch that fails ---------------------------------------------------
+
+
+@pytest.fixture
+def live_fetches(monkeypatch):
+    """Count live key fetches, and make them fail the way a blocked page does."""
+    monkeypatch.delenv("ITAMX_API_KEY", raising=False)
+    keyfetch.reset_cache()
+    calls = []
+
+    def fail() -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(keyfetch, "_fetch_live", fail)
+    return calls
+
+
+def new_process():
+    """What a fresh interpreter starts with: nothing in memory, the disk as it was."""
+    keyfetch._runtime_cache = None
+
+
+def test_a_failed_fetch_is_not_repeated_by_the_next_process(live_fetches):
+    assert keyfetch.get_api_key() == keyfetch._FALLBACK
+    new_process()
+    assert keyfetch.get_api_key() == keyfetch._FALLBACK
+    assert len(live_fetches) == 1
+
+
+def test_it_is_tried_again_once_the_hour_is_up(live_fetches):
+    keyfetch.get_api_key()
+    stale = time.time() - keyfetch._FALLBACK_TTL_SECONDS - 60
+    os.utime(keyfetch._fallback_path(), (stale, stale))
+    new_process()
+    keyfetch.get_api_key()
+    assert len(live_fetches) == 2
+
+
+def test_reset_forgets_the_failure_too(live_fetches):
+    keyfetch.get_api_key()
+    keyfetch.reset_cache()
+    keyfetch.get_api_key()
+    assert len(live_fetches) == 2
+
+
+def test_a_key_that_is_fetched_is_cached_as_before(monkeypatch):
+    monkeypatch.delenv("ITAMX_API_KEY", raising=False)
+    keyfetch.reset_cache()
+    live = "AIza" + "L" * 35
+    monkeypatch.setattr(keyfetch, "_fetch_live", lambda: live)
+    assert keyfetch.get_api_key() == live
+    assert not keyfetch._fallback_path().exists()
+    new_process()
+    monkeypatch.setattr(keyfetch, "_fetch_live", lambda: pytest.fail("fetched twice"))
+    assert keyfetch.get_api_key() == live

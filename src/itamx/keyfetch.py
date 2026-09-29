@@ -9,10 +9,13 @@ Resolution order:
   2. on-disk cache `~/.cache/itamx/api_key` (TTL 30 days)
   3. fetched from https://matrix.itasoftware.com/ by scraping for `AIza…`
      and persisted to the cache
+  4. the built-in fallback -- remembered for an hour when the fetch fails, so
+     that every new process does not pay for the same failed fetch again
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import time
@@ -23,6 +26,10 @@ import httpx
 _ENV_VAR = "ITAMX_API_KEY"
 _CACHE_FILENAME = "api_key"
 _TTL_SECONDS = 30 * 24 * 3600  # 30 days
+# A failed live fetch, remembered. Short on purpose: the page may be back in
+# an hour, and a key fetched from it beats the built-in one.
+_FALLBACK_FILENAME = "api_key.fallback"
+_FALLBACK_TTL_SECONDS = 3600
 _KEY_RE = re.compile(r"AIza[0-9A-Za-z_-]{35}")
 # Public knowledge — same identifier any browser receives. Used only as a
 # last-resort fallback if both env var and live fetch fail.
@@ -31,11 +38,39 @@ _FALLBACK = "AIza" + "SyBH1mte6BdKzvf0c2mYprkyvfHCRWmfX7g"
 _runtime_cache: str | None = None
 
 
-def _cache_path() -> Path:
+def _cache_dir() -> Path:
     base = os.environ.get("ITAMX_CACHE_DIR")
     d = Path(base).expanduser() if base else Path.home() / ".cache" / "itamx"
     d.mkdir(parents=True, exist_ok=True)
-    return d / _CACHE_FILENAME
+    return d
+
+
+def _cache_path() -> Path:
+    return _cache_dir() / _CACHE_FILENAME
+
+
+def _fallback_path() -> Path:
+    return _cache_dir() / _FALLBACK_FILENAME
+
+
+def _fetch_failed_recently() -> bool:
+    """True when a live fetch failed within the last hour.
+
+    Every CLI run and every bridge process starts with an empty in-process
+    cache, and a fetch that fails is never written to the key cache. Without
+    this each of them asks the page again: half a second where it is refused
+    (a proxy's 403), the full 10-second timeout where it is unreachable.
+    """
+    try:
+        return time.time() - _fallback_path().stat().st_mtime <= _FALLBACK_TTL_SECONDS
+    except OSError:
+        return False
+
+
+def _remember_failed_fetch() -> None:
+    # Best effort: an unwritable cache only costs the next process a fetch.
+    with contextlib.suppress(OSError):
+        _fallback_path().touch()
 
 
 def _read_cached() -> str | None:
@@ -86,23 +121,29 @@ def get_api_key() -> str:
         _runtime_cache = cached
         return _runtime_cache
 
+    if _fetch_failed_recently():
+        _runtime_cache = _FALLBACK
+        return _runtime_cache
+
     live = _fetch_live()
     if live:
         _write_cached(live)
         _runtime_cache = live
         return _runtime_cache
 
+    _remember_failed_fetch()
     _runtime_cache = _FALLBACK
     return _runtime_cache
 
 
 def reset_cache() -> None:
-    """Forget the in-process cache and the on-disk cached key."""
+    """Forget the in-process cache, the on-disk cached key and a failed fetch."""
     global _runtime_cache
     _runtime_cache = None
-    try:
-        _cache_path().unlink()
-    except FileNotFoundError:
-        pass
-    except Exception:
-        pass
+    for path in (_cache_path, _fallback_path):
+        try:
+            path().unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
